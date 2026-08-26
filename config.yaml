@@ -1,0 +1,68 @@
+# =====================================================================
+# Configuración única del sistema (reproducibilidad first).
+# Mismo comando -> mismo número. La semilla base sólo fija el ensemble;
+# el resultado NO depende de una semilla individual (voto mayoritario).
+# =====================================================================
+
+seed: 42
+
+data:
+  start: "2004-01-01"
+  end: null                      # null = hasta hoy
+  tickers: [SPY, QQQ, XLP, TLT, SHY, LQD, HYG, GLD, DBC]
+  benchmark: SPY
+  vix_ticker: "^VIX"
+  fred_series: [T10Y2Y, BAA10Y]  # curva de tipos y spread de crédito
+  rf_series: DGS3MO              # T-bill 3M para el Sharpe en exceso
+
+features:
+  # Bloques mínimos y económicamente motivados (lección: más señales NO es mejor)
+  # Los z-scores miden CAMBIOS de condiciones, que es lo que define un régimen;
+  # la ablación (exp02/exp12/exp14) confirmó que el resto de features no aporta.
+  vol_block: [log_vix, rv21_spy]        # HMM de volatilidad
+  macro_block: [t10y2y_z, baa10y_z]     # HMM macro (FRED, en z-scores)
+  rv_window: 21          # vol realizada (días)
+  corr_window: 63        # correlación SPY-TLT (días)
+  z_window: 252          # ventana de z-score macro (1 año hábil)
+  macro_shift_extra: 0   # días extra de retraso del bloque macro (robustez
+                         # al lag de publicación de FRED; test con 1)
+
+hmm:
+  n_states: 2            # 2 por interpretabilidad y anti-overfitting (no K=4)
+  covariance_type: full
+  n_iter: 200
+  n_init: 10             # ensemble obligatorio
+  selection: ensemble    # {"ensemble", "max_likelihood"}
+  # Feature-ancla para el criterio determinista de label switching:
+  # estado 1 = valor alto del ancla (estrés / contracción)
+  anchor_vol: log_vix
+  anchor_macro: baa10y_z
+
+walk_forward:
+  scheme: expanding      # expansiva por defecto; rolling en sensibilidad (§5.3)
+  train_min_days: 1260   # ~5 años de entrenamiento inicial
+  refit_days: 21         # re-entrenar cada mes hábil
+
+allocation:
+  # Matriz régimen -> universo: AQUÍ está el valor del sistema.
+  # LQD se excluyó por ablación (exp07/exp16): su papel queda cubierto por
+  # SHY y en los crashes se comporta como riesgo, no como protección.
+  regime_universes:
+    Growth:     [SPY, QQQ]
+    Crash:      [TLT, SHY, GLD, XLP]
+    Sideways_A: [SPY, GLD, DBC]
+    Sideways_B: [XLP, GLD, SHY]
+  # Motor: mezcla blanda CAUSAL -> w = sum_r P(r) * w_r con probabilidades
+  # filtradas (sólo pasado). La incertidumbre del modelo se traslada a la
+  # cartera: transición suave por construcción, sin anti-whipsaw ad hoc.
+  mode: soft               # {"soft", "hard"} (hard = switch discreto, ablación)
+  weighting: inverse_vol   # ÚNICO ponderador para los 4 regímenes
+  ewma_span: 63            # vol EWMA para inverse-vol
+  persistence_days: 3      # anti-whipsaw (sólo aplica en mode: hard)
+  rebalance: first_bday_month
+  rebalance_offset_days: 0   # día hábil del mes del rebalanceo (0 = primero;
+                             # >0 sólo en el test de sensibilidad §5.6)
+
+backtest:
+  cost_bps: 10             # comisión + slippage sobre el turnover
+  delay_days: 0            # días extra señal->ejecución (robustez; test con 1)
